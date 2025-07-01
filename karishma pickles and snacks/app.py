@@ -1,47 +1,49 @@
 from flask import Flask, render_template_string, request, session, redirect, url_for
 import os
-import requests 
 import boto3
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
-
-sns = boto3.client('sns', region_name='ap-south-1')
-dynamodb = boto3.resource('dynamodb', region_name='ap-south-1')
-SNS_TOPIC_ARN = 'arn:aws:sns:ap-south-1:123456789012:MySNSTopic'
-
-def get_ec2_metadata():
-    try:
-        response = requests.get("http://169.254.169.254/latest/meta-data/public-ipv4", timeout=2)
-        if response.status_code == 200:
-            return response.text
-        else:
-            return "Metadata not found"
-    except:
-        return "Not running on EC2"
+import requests
+import uuid
 
 app = Flask(__name__)
-app.secret_key = 'Homemade_secret_key'
 
-users_table = dynamodb.Table('Users')
+app.secret_key = 'Homemade_secret_key'
+# AWS configuration
+region = 'ap-south-1'  # Change if needed
+
+dynamodb = boto3.resource('dynamodb', region_name=region)
+sns = boto3.client('sns', region_name=region)
+SNS_TOPIC_ARN = 'arn:aws:sns:ap-south-1:YOUR_ACCOUNT_ID:your-topic-name'  
+
+# DynamoDB tables
+contacts_table = dynamodb.Table('contacts')
+reviews_table = dynamodb.Table('reviews')
+
+
+# Temporary in-memory user store
+users = {}
 
 # Product List
 products_list = [
+    # Non-Veg Pickles
     {"id": 1, "name": "Fish Pickle", "price": 300, "image": "/static/images/fish-pickle.png", "description": "Authentic fish pickle with spicy flavor", "category": "nonveg"},
     {"id": 2, "name": "Gongura Prawn Pickle", "price": 320, "image": "/static/images/gongura-prawn-pickle.webp", "description": "Prawns with traditional gongura taste", "category": "nonveg"},
     {"id": 3, "name": "Mutton Pickle", "price": 350, "image": "/static/images/mutton-pickle.webp", "description": "Juicy and spicy mutton pieces", "category": "nonveg"},
+
+    # Veg Pickles
     {"id": 4, "name": "Chintakaya Pickle", "price": 200, "image": "/static/images/chintakaya-pickle.jpg", "description": "Sour tamarind pickle with homemade taste", "category": "veg"},
     {"id": 5, "name": "Gongura Pickle", "price": 180, "image": "/static/images/green-chili-pickle.jpg", "description": "Spicy gongura pickle for hot lovers", "category": "veg"},
     {"id": 6, "name": "Instant Tomato Pickle", "price": 250, "image": "/static/images/instant-tomato-pickle.png", "description": "Ready-made tomato pickle with rich aroma", "category": "veg"},
     {"id": 7, "name": "Pandumirchi Pickle", "price": 240, "image": "/static/images/pandumirchi-pickle.webp", "description": "Red chili pickle with tangy punch", "category": "veg"},
+
+    # Snacks
     {"id": 8, "name": "Jantikalu", "price": 150, "image": "/static/images/jantikalu.jpg", "description": "Crunchy Andhra traditional snack", "category": "snacks"},
     {"id": 9, "name": "Bobbatlu & Ariselu", "price": 160, "image": "/static/images/bobbatlu-ariselu.avif", "description": "Festival special sweet treats", "category": "snacks"}
 ]
 
 @app.route('/')
 def home():
-    ec2_ip = get_ec2_metadata()
+    print("SESSION:", session)  
+
     return render_template_string('''
     <!DOCTYPE html>
     <html>
@@ -72,10 +74,9 @@ def home():
         </nav>
 
         <p>This is the homepage for Homemade Pickles and Snacks.</p>
-        <p><strong>EC2 Public IP:</strong> {{ ec2_ip }}</p>
     </body>
     </html>
-    ''', ec2_ip=ec2_ip)
+    ''')
 
 @app.route('/veg')
 def veg():
@@ -147,13 +148,10 @@ def login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
-        response = users_table.get_item(Key={'email': email})
-        user = response.get('Item')
-        if user and user['password'] == password:
+        if email in users and users[email] == password:
             session['user'] = email
             return redirect('/')
         return "Invalid credentials. <a href='/login'>Try again</a>"
-
     return render_template_string('''
         <h2>Login</h2>
         <form method="post">
@@ -168,12 +166,10 @@ def register():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
-        response = users_table.get_item(Key={'email': email})
-        if 'Item' in response:
+        if email in users:
             return "User already exists. <a href='/register'>Try again</a>"
-        users_table.put_item(Item={'email': email, 'password': password})
+        users[email] = password
         return redirect('/login')
-
     return render_template_string('''
         <h2>Register</h2>
         <form method="post">
@@ -201,14 +197,35 @@ def about():
     <a href="/">Back</a>
     ''')
 
-@app.route('/contact')
+@app.route('/contact', methods=['GET', 'POST'])
 def contact():
+    if request.method == 'POST':
+        contact_id = str(uuid.uuid4())
+        name = request.form['name']
+        email = request.form['email']
+        message = request.form['message']
+
+        contacts_table.put_item(Item={
+            'contact_id': contact_id,
+            'name': name,
+            'email': email,
+            'message': message
+        })
+        return render_template_string('''
+            <h2>Thanks for contacting us!</h2>
+            <a href="/">Back</a>
+        ''')
     return render_template_string('''
-    <h2>Contact Us</h2>
-    <p>Email: contact@Homemadepickles.com</p>
-    <p>Phone: +91-9876543210</p>
-    <a href="/">Back</a>
+        <h2>Contact Us</h2>
+        <form method="post">
+            Name: <input name="name"><br>
+            Email: <input name="email"><br>
+            Message: <textarea name="message"></textarea><br>
+            <button type="submit">Send</button>
+        </form>
+        <a href="/">Back</a>
     ''')
+
 
 @app.route('/checkout', methods=['GET', 'POST'])
 def checkout():
@@ -225,34 +242,26 @@ def checkout():
     <a href="/">Back</a>
     ''')
 
+
 @app.route('/success')
 def success():
-    cart = session.get('cart', {})
-    email = session.get('user', 'Guest')
-    items = []
-    for pid, qty in cart.items():
-        for p in products_list:
-            if str(p['id']) == pid:
-                items.append(f"{p['name']} × {qty}")
-    item_list = "\n".join(items) if items else "No items"
-    message = f"🛍 New Order from {email}\n\nItems:\n{item_list}"
-    subject = "New Order Notification - Homemade Pickles"
+    if 'user' in session:
+        email = session['user']
+    else:
+        email = 'Guest'
 
-    try:
-        sns.publish(TopicArn=SNS_TOPIC_ARN, Message=message, Subject=subject)
-        sns_status = "SNS notification sent successfully!"
-    except Exception as e:
-        sns_status = f"Error sending SNS message: {e}"
-
-    session.pop('cart', None)
-
-    return render_template_string(f'''
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Message=f"New order placed by {email}!",
+        Subject="New Order Notification"
+    )
+    return render_template_string('''
         <h2>✅ Order Successful!</h2>
         <p>Thank you for your order!</p>
-        <p>{sns_status}</p>
         <a href="/">Back to Home</a>
     ''')
 
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port)
