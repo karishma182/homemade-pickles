@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 # -------------------- AWS Setup --------------------
 
 dynamodb = boto3.resource('dynamodb', region_name=region)
-orders_table = dynamodb.Table(DYNAMODB_TABLE)
-users_table = dynamodb.Table('user')
+orders_table = dynamodb.Table('orders')
+users_table = dynamodb.Table('users')
 # SNS Setup
 
 sns = boto3.client('sns', region_name=region)
@@ -364,6 +364,5 @@ def internal_error(e):
 
 
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+if (__name__)== '__main__':
+ app.run(debug=True, host='0.0.0.0', port=5000)
