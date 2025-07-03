@@ -1,4 +1,11 @@
-from flask import Flask, render_template_string, request, session, redirect, url_for
+from flask import Flask, render_template_string, request, session, redirect, url_for,flash
+from functools import wraps
+import smtplib
+import logging
+from email.mime.text import MIMEText
+from datetime import datetime
+from werkzeug.exceptions import BadRequest
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import boto3
 import requests
@@ -9,20 +16,96 @@ app = Flask(__name__)
 app.secret_key = 'Homemade_secret_key'
 # AWS configuration
 region = 'ap-south-1'  # Change if needed
+DYNAMODB_TABLE = 'PickleOrders'
+# Email settings
+EMAIL_HOST = 'smtp.@gmail.com'
+EMAIL_PORT = 587
+EMAIL_USER = 'Homemade pickles and snacks@gmail.com'
+EMAIL_PASSWORD = os.environ.get("dnzsjobqougmdxdk")
+
+# -------------------- Logger Setup --------------------
+
+log_folder = 'logs'
+log_file = os.path.join(log_folder, 'app.log')
+
+if os.path.exists(log_folder):
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+
+logger = logging.getLogger(__name__)
+
+# -------------------- AWS Setup --------------------
 
 dynamodb = boto3.resource('dynamodb', region_name=region)
-sns = boto3.client('sns', region_name=region)
-SNS_TOPIC_ARN = 'arn:aws:sns:ap-south-1:YOUR_ACCOUNT_ID:your-topic-name'  
+orders_table = dynamodb.Table(DYNAMODB_TABLE)
+users_table = dynamodb.Table('user')
+# SNS Setup
 
+sns = boto3.client('sns', region_name=region)
+SNS_TOPIC_ARN = 'arn:aws:sns:ap-south-1:YOUR_ACCOUNT_ID:your-topic-name'
+
+
+
+# -------------------- Helper Functions --------------------
+
+def send_order_email(to_email, order_summary):
+    try:
+        msg = MIMEText(order_summary)
+        msg['Subject'] = 'Your Order Confirmation'
+        msg['From'] = EMAIL_USER
+        msg['To'] = to_email
+
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASSWORD)
+            server.send_message(msg)
+
+        logger.info("Order email sent to %s", to_email)
+    except Exception as e:
+        logger.error("Failed to send email: %s", e)
+def save_order_to_dynamodb(order_data):
+    try:
+        orders_table.put_item(Item=order_data)
+        logger.info("Order saved to DynamoDB: %s", order_data['order_id'])
+    except Exception as e:
+        logger.error("DynamoDB error: %s", e)
+
+def send_sns_notification(message, phone_number=None, topic_arn=None):
+    try:
+        if phone_number:
+            sns.publish(PhoneNumber=phone_number, Message=message)
+            logger.info(f"SNS SMS sent to {phone_number}")
+        elif topic_arn:
+            sns.publish(TopicArn=topic_arn, Message=message)
+            logger.info(f"SNS message published to topic {topic_arn}")
+        else:
+            logger.info("SNS notification skipped (no phone number or topic)")
+    except Exception as e:
+        logger.error("SNS send failed: %s", e)
 # DynamoDB tables
 contacts_table = dynamodb.Table('contacts')
-reviews_table = dynamodb.Table('reviews')
 
 
-# Temporary in-memory user store
+
+ # Simple in-memory user storage
 users = {}
 
-# Product List
+# Store  contacts in files
+CONTACTS_FILE = 'contacts.txt'
+
+# Product List with Online Image URLs
+
 products_list = [
     # Non-Veg Pickles
     {"id": 1, "name": "Fish Pickle", "price": 300, "image": "/static/images/fish-pickle.png", "description": "Authentic fish pickle with spicy flavor", "category": "nonveg"},
@@ -39,6 +122,14 @@ products_list = [
     {"id": 8, "name": "Jantikalu", "price": 150, "image": "/static/images/jantikalu.jpg", "description": "Crunchy Andhra traditional snack", "category": "snacks"},
     {"id": 9, "name": "Bobbatlu & Ariselu", "price": 160, "image": "/static/images/bobbatlu-ariselu.avif", "description": "Festival special sweet treats", "category": "snacks"}
 ]
+def login_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if 'username' not in session:
+            flash("Please log in to continue.", "error")
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return wrapper
 
 @app.route('/')
 def home():
@@ -260,6 +351,17 @@ def success():
         <p>Thank you for your order!</p>
         <a href="/">Back to Home</a>
     ''')
+    # -------------------- Error Pages --------------------
+
+@app.errorhandler(404)
+def not_found_error(e):
+    return render_template_string('<h2>404 - Page Not Found</h2><a href="/">Back</a>'), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    return render_template_string('<h2>500 - Internal Server Error</h2><a href="/">Back</a>'), 500
+
+
 
 
 if __name__ == "__main__":
